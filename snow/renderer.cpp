@@ -2,13 +2,12 @@
 #include "renderer.h"
 
 
-void SnowRenderer::_loadSnowBitmap() {
+void SnowRenderer::_loadSnowBitmap(HICON hisnow) {
     ComPtr<IWICImagingFactory2> wic_factory;
     HR(CoCreateInstance(CLSID_WICImagingFactory2, nullptr, CLSCTX_INPROC_SERVER, __uuidof(wic_factory), (void**)wic_factory.GetAddressOf()));
 
     ComPtr<IWICBitmap> wic_bmp;
-    HandleWrapperIcon hwico = (HICON)LoadImage(GetModuleHandle(nullptr), MAKEINTRESOURCE(IDI_SNOW), IMAGE_ICON, BMPSIZE, BMPSIZE, LR_DEFAULTCOLOR);
-    HR(wic_factory->CreateBitmapFromHICON(hwico, wic_bmp.GetAddressOf()));
+    HR(wic_factory->CreateBitmapFromHICON(hisnow, wic_bmp.GetAddressOf()));
     HR(WICConvertBitmapSource(GUID_WICPixelFormat32bppPBGRA, wic_bmp.Get(), _snow_bmp.GetAddressOf()));
 }
 
@@ -101,7 +100,7 @@ void SnowRenderer::_createRenderer(bool post_swap_chain /*false*/) {
     _createDCompTarget(_hwnd);
 }
 
-void SnowRenderer::_releaseRenderer(bool post_swap_chain /*flase*/) {
+void SnowRenderer::_releaseRenderer(bool post_swap_chain /*flase*/) noexcept {
     _dcomp_target.Reset();
     if (_d2d_dc) _d2d_dc->SetTarget(nullptr);
     if (!post_swap_chain) {
@@ -116,17 +115,32 @@ void SnowRenderer::_releaseRenderer(bool post_swap_chain /*flase*/) {
     }
 }
 
-void SnowRenderer::initialize(UINT width, UINT height, HWND hwnd) {
+HRESULT SnowRenderer::initialize(UINT cx, UINT cy, HICON hisnow, UINT width, UINT height, HWND hwnd) {
+    if (!cx && !cy && !hisnow && !width && !height && !hwnd) return E_INVALIDARG;
+    _scx = cx;
+    _scy = cy;
     _width = width;
     _height = height;
     _hwnd = hwnd;
-    _loadSnowBitmap();
-    _createRenderer();
+    try {
+        _loadSnowBitmap(hisnow);
+        _createRenderer();
+    }
+    catch (ComException& ce) {
+        return ce.hr;
+    }
+    return S_OK;
 }
 
-void SnowRenderer::refreash() {
-    _releaseRenderer();
-    _createRenderer();
+HRESULT SnowRenderer::refreash() {
+    try {
+        _releaseRenderer();
+        _createRenderer();
+    }
+    catch (ComException& ce) {
+        return ce.hr;
+    }
+    return S_OK;
 }
 
 HRESULT SnowRenderer::presentTest(){
@@ -138,7 +152,7 @@ HRESULT SnowRenderer::render(const std::vector<Snow>& snows, float alpha /*1.0f*
     _d2d_dc->Clear();
 
     for (auto& item : snows) {
-        D2D_MATRIX_3X2_F mtx = D2D1::Matrix3x2F(item.size / BMPSIZE, 0, 0, item.size / BMPSIZE, 0, 0);
+        D2D_MATRIX_3X2_F mtx = D2D1::Matrix3x2F(item.size / _scx, 0, 0, item.size / _scy, 0, 0);
         _d2d_dc_bmp_affine->SetValue(D2D1_2DAFFINETRANSFORM_PROP_TRANSFORM_MATRIX, mtx);
         _d2d_dc_bmp_opacity->SetValue(D2D1_OPACITY_PROP_OPACITY, item.alpha((float)_height) * alpha);
 
@@ -150,20 +164,34 @@ HRESULT SnowRenderer::render(const std::vector<Snow>& snows, float alpha /*1.0f*
     return _dxgi_swap_chain->Present(1, 0);
 }
 
-void SnowRenderer::resize(UINT width, UINT height) {
+HRESULT SnowRenderer::resize(UINT width, UINT height) {
+    if (!width && !height) return E_INVALIDARG;
     if (width != _width || height != _height) {
         _width = width;
         _height = height;
         _releaseRenderer(true);
-        _dxgi_swap_chain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
-        _createRenderer(true);
+        try {
+            HR(_dxgi_swap_chain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0));
+            _createRenderer(true);
+        }
+        catch (ComException& ce) {
+            return ce.hr;
+        }
     }
+    return S_OK;
 }
 
-void SnowRenderer::setWindow(HWND hwnd) {
+HRESULT SnowRenderer::setWindow(HWND hwnd) {
+    if (!hwnd) return E_INVALIDARG;
     if (hwnd != _hwnd) {
         _hwnd = hwnd;
         _dcomp_target.Reset();
-        _createDCompTarget(hwnd);
+        try {
+            _createDCompTarget(hwnd);
+        }
+        catch (ComException& ce) {
+            return ce.hr;
+        }
     }
+    return S_OK;
 }

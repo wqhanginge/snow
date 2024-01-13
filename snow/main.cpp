@@ -14,35 +14,31 @@
 #define WM_SNOWSTOP     (WM_APP + 3)
 #define WM_SNOWCLOSE    (WM_APP + 4)
 
+#define SNOW_BMPSIZE    128
 #define SNOW_TIMERID    1
 #define SNOW_NIID       1
 #define SNOW_NITIPSTR   "Animated Snow Wallpaper"
 
 
-struct ThreadInfo {
-    bool valid;
-    bool running;
-    HWND hwnd;
+struct SnowWindowData {
+    HMONITOR hmon;
+    HRESULT hr;
 };
 
-using ThreadMap = std::unordered_map<HMONITOR, ThreadInfo>;
+struct ThreadData {
+    std::thread th;
+    HWND hwnd;
+    bool valid;
+    bool running;
+};
+
+using ThreadMap = std::unordered_map<HMONITOR, ThreadData>;
 
 
-void safeResize(SnowRenderer& sr, UINT width, UINT height) {
-    try {
-        sr.resize(width, height);
-    }
-    catch (ComException&) { //refresh device when error occured
-        sr.refreash();
-    }
-}
-
-HRESULT safeRender(SnowRenderer& sr, SnowList& sl, HRESULT hr, float alpha = 1.0f) {
-    if (hr == DXGI_STATUS_OCCLUDED) return sr.presentTest();
-    hr = sr.render(sl.list, alpha);
+HRESULT tryRender(SnowRenderer& sr, SnowList& sl, HRESULT hr, float alpha = 1.0f) {
+    hr = (hr == DXGI_STATUS_OCCLUDED) ? sr.presentTest() : sr.render(sl.list, alpha);
     if (hr != S_OK && hr != DXGI_STATUS_OCCLUDED) { //error occur, refresh device and discard this frame
-        sr.refreash();
-        hr = S_FALSE;
+        hr = SUCCEEDED(sr.refreash()) ? S_FALSE : E_UNEXPECTED;
     }
     return hr;
 }
@@ -50,7 +46,7 @@ HRESULT safeRender(SnowRenderer& sr, SnowList& sl, HRESULT hr, float alpha = 1.0
 LRESULT CALLBACK SnowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     SnowList* psl = (SnowList*)GetWindowLongPtr(hwnd, WND_EXOFFSET(0));
     SnowRenderer* psr = (SnowRenderer*)GetWindowLongPtr(hwnd, WND_EXOFFSET(1));
-    HRESULT* phr = (HRESULT*)GetWindowLongPtr(hwnd, WND_EXOFFSET(2));
+    SnowWindowData* pswd = (SnowWindowData*)GetWindowLongPtr(hwnd, WND_EXOFFSET(2));
 
     switch (msg) {
     case WM_CREATE: //default state is stopped
@@ -62,10 +58,13 @@ LRESULT CALLBACK SnowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         psl = new SnowList(lpcs->cx, lpcs->cy, lprcwork->bottom - lprcwork->top, GetDpiForWindow(hwnd), rd());
         SetWindowLongPtr(hwnd, WND_EXOFFSET(0), (LONG_PTR)psl);
         psr = new SnowRenderer;
-        psr->initialize(lpcs->cx, lpcs->cy, hwnd);
         SetWindowLongPtr(hwnd, WND_EXOFFSET(1), (LONG_PTR)psr);
-        phr = new HRESULT(S_OK);
-        SetWindowLongPtr(hwnd, WND_EXOFFSET(2), (LONG_PTR)phr);
+        pswd = new SnowWindowData{ MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL), S_OK };
+        SetWindowLongPtr(hwnd, WND_EXOFFSET(2), (LONG_PTR)pswd);
+
+        HICON hico = (HICON)LoadImage(lpcs->hInstance, MAKEINTRESOURCE(IDI_SNOW), IMAGE_ICON, SNOW_BMPSIZE, SNOW_BMPSIZE, LR_DEFAULTCOLOR);
+        pswd->hr = psr->initialize(SNOW_BMPSIZE, SNOW_BMPSIZE, hico, lpcs->cx, lpcs->cy, hwnd);
+        DestroyIcon(hico);
 
         SetWindowPos(hwnd, HWND_BOTTOM, lpcs->x, lpcs->y, lpcs->cx, lpcs->cy, SWP_NOACTIVATE | SWP_NOREDRAW);
         ENDCASECODE;
@@ -73,7 +72,7 @@ LRESULT CALLBACK SnowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     case WM_DESTROY:
         delete psl;
         delete psr;
-        delete phr;
+        delete pswd;
         KillTimer(hwnd, SNOW_TIMERID);
         PostQuitMessage(0);
         return 0;
@@ -90,8 +89,9 @@ LRESULT CALLBACK SnowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         return 0;
     case WM_DPICHANGED: //refresh animation if DPI changed
         BEGINCASECODE;
+        HMONITOR hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL);
         UINT dpi = LOWORD(wparam);
-        if (dpi != psl->dpi) {
+        if (hmon && hmon == pswd->hmon && dpi != psl->dpi) {
             psl->dpi = dpi;
             psl->refreshList();
         }
@@ -99,13 +99,19 @@ LRESULT CALLBACK SnowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         return 0;
     case WM_DISPLAYCHANGE:  //refresh animation and device if resolution changed
         BEGINCASECODE;
-        UINT xres = LOWORD(lparam), yres = HIWORD(lparam);
-        if (xres != psl->xres || yres != psl->yres) {
-            psl->xres = xres;
-            psl->yres = yres;
-            psl->refreshList();
-            SetWindowPos(hwnd, 0, 0, 0, xres, yres, SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOZORDER | SWP_NOMOVE);
-            safeResize(*psr, xres, yres);
+        HMONITOR hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL);
+        if (hmon && hmon == pswd->hmon) {
+            MONITORINFO monii = { sizeof(MONITORINFO) };
+            GetMonitorInfo(hmon, &monii);
+            UINT xres = monii.rcMonitor.right - monii.rcMonitor.left;
+            UINT yres = monii.rcMonitor.bottom - monii.rcMonitor.top;
+            if (xres != psl->xres || yres != psl->yres) {
+                psl->xres = xres;
+                psl->yres = yres;
+                psl->refreshList();
+                SetWindowPos(hwnd, 0, 0, 0, xres, yres, SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOZORDER | SWP_NOMOVE);
+                pswd->hr = psr->resize(xres, yres);
+            }
         }
         ENDCASECODE;
         return 0;
@@ -113,20 +119,22 @@ LRESULT CALLBACK SnowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         BEGINCASECODE;
         PAINTSTRUCT ps;
         BeginPaint(hwnd, &ps);
-        *phr = safeRender(*psr, *psl, *phr);
+        pswd->hr = tryRender(*psr, *psl, pswd->hr);
         EndPaint(hwnd, &ps);
         ENDCASECODE;
         return 0;
     case WM_TIMER:
         BEGINCASECODE;
         HMONITOR hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL);
-        if (hmon) { //update current ground in each frame
+        if (hmon && hmon == pswd->hmon) {   //update current ground in each frame
             MONITORINFO monii = { sizeof(MONITORINFO) };
             GetMonitorInfo(hmon, &monii);
             psl->ground = monii.rcWork.bottom - monii.rcWork.top;
+            psl->nextFrame();
+            pswd->hr = tryRender(*psr, *psl, pswd->hr);
+            if (pswd->hr == E_UNEXPECTED) PostMessage(hwnd, WM_SNOWSTOP, 0, 0);
         }
-        psl->nextFrame();
-        *phr = safeRender(*psr, *psl, *phr);
+        else PostMessage(hwnd, WM_SNOWSTOP, 0, 0);
         ENDCASECODE;
         return 0;
     }
@@ -134,7 +142,7 @@ LRESULT CALLBACK SnowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
 }
 
 void runThread(HMONITOR hmon, HWND* phwnd, HANDLE hevent) {
-    SnowRenderer::HR(CoInitializeEx(nullptr, COINIT_MULTITHREADED));    //for WIC
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED); //for WIC
     MONITORINFO monii = { sizeof(MONITORINFO) };
     GetMonitorInfo(hmon, &monii);
 
@@ -161,17 +169,16 @@ void runThread(HMONITOR hmon, HWND* phwnd, HANDLE hevent) {
 
 BOOL CALLBACK MonitorEnumProc(HMONITOR hmonitor, HDC hdc, LPRECT lprect, LPARAM lparam) {
     ThreadMap* ptm = (ThreadMap*)lparam;
-    auto item = ptm->find(hmonitor);
-    if (item == ptm->end()) {   //create a new thread if find a new monitor
-        ThreadInfo thi = { false, false, nullptr };
+    auto it = ptm->find(hmonitor);
+    if (it == ptm->end()) { //create a new thread if find a new monitor
+        HWND hwnd = nullptr;
         HANDLE hevent = CreateEvent(nullptr, false, false, nullptr);
-        std::thread th(runThread, hmonitor, &thi.hwnd, hevent);
-        th.detach();
+        std::thread th(runThread, hmonitor, &hwnd, hevent);
         WaitForSingleObject(hevent, INFINITE);
         CloseHandle(hevent);
-        item = ptm->emplace(hmonitor, thi).first;
+        it = ptm->emplace(hmonitor, ThreadData{ std::move(th), hwnd, false, false }).first;
     }
-    (*item).second.valid = true;    //mark existing threads as valid
+    (*it).second.valid = true;  //mark existing threads as valid
     return TRUE;
 }
 
@@ -202,6 +209,7 @@ LRESULT onDestroy(HWND hwnd, WPARAM wparam, LPARAM lparam) {
     ThreadMap* ptm = (ThreadMap*)GetWindowLongPtr(hwnd, WND_EXOFFSET(0));
     for (auto& item : *ptm) {   //kill threads
         PostMessage(item.second.hwnd, WM_SNOWCLOSE, 0, 0);
+        item.second.th.join();
     }
     delete ptm;
 
@@ -229,7 +237,10 @@ LRESULT onCommand(HWND hwnd, WPARAM wparam, LPARAM lparam) {
             CheckMenuRadioItem(hnimenu, ID_NIM_SHOW, ID_NIM_HIDE, ID_NIM_HIDE, MF_BYCOMMAND);
             break;
         case ID_NIM_REFRESH:    //restart threads
-            for (auto& item : *ptm) PostMessage(item.second.hwnd, WM_SNOWCLOSE, 0, 0);
+            for (auto& item : *ptm) {
+                PostMessage(item.second.hwnd, WM_SNOWCLOSE, 0, 0);
+                item.second.th.join();
+            }
             ptm->clear();
             EnumDisplayMonitors(nullptr, nullptr, MonitorEnumProc, (LPARAM)ptm);
             for (auto& item : *ptm) {
@@ -279,15 +290,20 @@ LRESULT onDisplayChange(HWND hwnd, WPARAM wparam, LPARAM lparam) {
     ThreadMap* ptm = (ThreadMap*)GetWindowLongPtr(hwnd, WND_EXOFFSET(0));
     for (auto& item : *ptm) item.second.valid = false;
     EnumDisplayMonitors(nullptr, nullptr, MonitorEnumProc, (LPARAM)ptm);
-    ThreadMap tmp = *ptm;
-    for (auto& item : tmp) {
-        if (!item.second.running) { //start animation for new threads
-            PostMessage(item.second.hwnd, WM_SNOWSTART, 0, 0);
-            ptm->at(item.first).running = true;
-        }
+    for (auto it = ptm->begin(); it != ptm->end();) {
+        auto& item = *it;
         if (!item.second.valid) {   //remove invalid threads
             PostMessage(item.second.hwnd, WM_SNOWCLOSE, 0, 0);
-            ptm->erase(item.first);
+            item.second.th.join();
+            it = ptm->erase(it);
+        }
+        else if (!item.second.running) {    //start animation for new threads
+            PostMessage(item.second.hwnd, WM_SNOWSTART, 0, 0);
+            item.second.running = true;
+            ++it;
+        }
+        else {
+            ++it;
         }
     }
     return 0;
