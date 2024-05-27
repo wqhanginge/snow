@@ -154,7 +154,7 @@ HRESULT SnowRenderer::render(const std::vector<Snow>& snows, float alpha /*1.0f*
     for (auto& item : snows) {
         D2D_MATRIX_3X2_F mtx = D2D1::Matrix3x2F(item.size / _scx, 0, 0, item.size / _scy, 0, 0);
         _d2d_dc_bmp_affine->SetValue(D2D1_2DAFFINETRANSFORM_PROP_TRANSFORM_MATRIX, mtx);
-        _d2d_dc_bmp_opacity->SetValue(D2D1_OPACITY_PROP_OPACITY, item.alpha((float)_height) * alpha);
+        _d2d_dc_bmp_opacity->SetValue(D2D1_OPACITY_PROP_OPACITY, item.alpha() * alpha);
 
         D2D_POINT_2F dstpos = D2D1::Point2F(item.x, item.y);
         _d2d_dc->DrawImage(_d2d_dc_bmp.Get(), dstpos, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC);

@@ -2,12 +2,6 @@
 #include "snows.h"
 
 
-void Snow::setPPFbyPPS(float pixel_per_sec /*AUTOPPS*/, float fps /*DEFTFPS*/, float dpi /*USER_DEFAULT_SCREEN_DPI*/) {
-    float def_pps = CLAMP(BASEPPS * size * USER_DEFAULT_SCREEN_DPI / dpi, SLOWPPS, FASTPPS);
-    pixel_per_frame = (pixel_per_sec) ? pixel_per_sec / fps : def_pps / fps;
-}
-
-
 SnowList::SnowList(UINT xres, UINT yres, UINT ground, UINT dpi, UINT seed /*std::mt19937::default_seed*/)
     :xres(xres), yres(yres), ground(ground), dpi(dpi), list(), urand(seed)
 {
@@ -21,33 +15,40 @@ void SnowList::refreshSnowState(Snow& snow) {
     snow.sleep_frames = urand() % (MAXSLEEPFRAMES * yres / DEFYRESOLU);
 }
 
+void SnowList::updateSnowGround(Snow& snow) {
+    if (snow.y < snow.ground) { //not fading yet
+        snow.ground = std::max<float>((float)ground, snow.y);
+    }
+}
+
 void SnowList::refreshList() {
     float scale = (float)dpi / USER_DEFAULT_SCREEN_DPI;
     size_t cnt = size_t(COUNTPERSIZE / scale * xres / DEFXRESOLU * yres / DEFYRESOLU);
     list.resize(cnt * SnowSizes.size());
-    for (size_t i = 0; i < cnt * SnowSizes.size(); i++) {
-        auto& item = list[i];
-        bool empty = !item.size;
-        item.size = SnowSizes[i % SnowSizes.size()] * scale;
-        if (empty || item.sleep_frames) {   //init for a new Snow item or a waiting item
-            item.setPPFbyPPS(Snow::AUTOPPS, (float)FPS, (float)dpi);
-            refreshSnowState(item);
+    for (size_t i = 0; i < list.size(); i++) {
+        auto& snow = list[i];
+        snow.size = SnowSizes[i % SnowSizes.size()] * scale;
+        if (!snow.pixel_per_frame || snow.sleep_frames) {   //init for a new Snow item or a waiting item
+            snow.pixel_per_frame = snow.pps((float)dpi) / FPS;
+            refreshSnowState(snow);
         }
     }
 }
 
+void SnowList::updateGround() {
+    for (auto& snow : list) updateSnowGround(snow);
+}
+
 void SnowList::nextFrame() {
-    for (auto& item : list) {
-        if (item.sleep_frames) {    //skip some frames at the begining of each turn
-            item.sleep_frames--;
+    for (auto& snow : list) {
+        if (snow.sleep_frames) {    //skip some frames at the begining of each turn
+            snow.sleep_frames--;
         }
-        else if (item.y >= yres) { //refreash when out of screen
-            refreshSnowState(item);
+        else if (snow.y >= yres) { //refreash when out of screen
+            refreshSnowState(snow);
         }
         else {  //fall when inside screen
-            if (item.ground != ground && item.y + item.size < min(item.ground, ground)) //update ground and keep the animation smooth
-                item.ground = (float)ground;
-            item.y += (item.y < item.ground) ? item.pixel_per_frame : Snow::SLOWPPS / FPS / 2;
+            snow.step((float)FPS);
         }
     }
 }

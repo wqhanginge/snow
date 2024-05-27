@@ -34,4 +34,9 @@
 
 #define BEGINCASECODE   {
 #define ENDCASECODE     }
-#define CLAMP(x,lt,rt)  min(max(x, lt), rt)
+
+
+template<typename Ty>
+constexpr const Ty& clamp(const Ty& val, const Ty& left, const Ty& right) {
+    return std::min<Ty>(std::max<Ty>(val, left), right);
+}
