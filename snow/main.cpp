@@ -35,6 +35,11 @@ struct ThreadData {
 using ThreadMap = std::unordered_map<HMONITOR, ThreadData>;
 
 
+inline bool isInSameMonitor(HWND hwnd, HMONITOR hmon) {
+    HMONITOR hmonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL);
+    return hmonitor && hmonitor == hmon;
+}
+
 HRESULT tryRender(SnowRenderer& sr, SnowList& sl, HRESULT hr, float alpha = 1.0f) {
     hr = (hr == DXGI_STATUS_OCCLUDED) ? sr.presentTest() : sr.render(sl.list, alpha);
     if (hr != S_OK && hr != DXGI_STATUS_OCCLUDED) { //error occur, refresh device and discard this frame
@@ -51,15 +56,17 @@ LRESULT CALLBACK SnowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     switch (msg) {
     case WM_CREATE: //default state is stopped
         BEGINCASECODE;
-        LPCREATESTRUCT lpcs = (LPCREATESTRUCT)lparam;
-        LPRECT lprcwork = (LPRECT)lpcs->lpCreateParams;
         std::random_device rd;
+        LPCREATESTRUCT lpcs = (LPCREATESTRUCT)lparam;
+        HMONITOR hmon = (HMONITOR)lpcs->lpCreateParams;
+        MONITORINFO monii = { sizeof(MONITORINFO) };
+        GetMonitorInfo(hmon, &monii);
 
-        psl = new SnowList(lpcs->cx, lpcs->cy, lprcwork->bottom - lprcwork->top, GetDpiForWindow(hwnd), rd());
+        psl = new SnowList(lpcs->cx, lpcs->cy, monii.rcWork.bottom - monii.rcMonitor.top, GetDpiForWindow(hwnd), rd());
         SetWindowLongPtr(hwnd, WND_EXOFFSET(0), (LONG_PTR)psl);
         psr = new SnowRenderer;
         SetWindowLongPtr(hwnd, WND_EXOFFSET(1), (LONG_PTR)psr);
-        pswd = new SnowWindowData{ MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL), S_OK };
+        pswd = new SnowWindowData{ hmon, S_OK };
         SetWindowLongPtr(hwnd, WND_EXOFFSET(2), (LONG_PTR)pswd);
 
         HICON hico = (HICON)LoadImage(lpcs->hInstance, MAKEINTRESOURCE(IDI_SNOW), IMAGE_ICON, SNOW_BMPSIZE, SNOW_BMPSIZE, LR_DEFAULTCOLOR);
@@ -89,31 +96,43 @@ LRESULT CALLBACK SnowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         return 0;
     case WM_DPICHANGED: //refresh animation if DPI changed
         BEGINCASECODE;
-        HMONITOR hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL);
         UINT dpi = LOWORD(wparam);
-        if (hmon && hmon == pswd->hmon && dpi != psl->dpi) {
+        if (isInSameMonitor(hwnd, pswd->hmon) && dpi != psl->dpi) {
             psl->dpi = dpi;
             psl->refreshList();
         }
         ENDCASECODE;
         return 0;
     case WM_DISPLAYCHANGE:  //refresh animation and device if resolution changed
-        BEGINCASECODE;
-        HMONITOR hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL);
-        if (hmon && hmon == pswd->hmon) {
+        if (isInSameMonitor(hwnd, pswd->hmon)) {
             MONITORINFO monii = { sizeof(MONITORINFO) };
-            GetMonitorInfo(hmon, &monii);
+            GetMonitorInfo(pswd->hmon, &monii);
             UINT xres = monii.rcMonitor.right - monii.rcMonitor.left;
             UINT yres = monii.rcMonitor.bottom - monii.rcMonitor.top;
-            if (xres != psl->xres || yres != psl->yres) {
+            UINT ground = monii.rcWork.bottom - monii.rcMonitor.top;
+            if (xres != psl->xres || yres != psl->yres || ground != psl->ground) {
                 psl->xres = xres;
                 psl->yres = yres;
+                psl->ground = ground;
                 psl->refreshList();
                 SetWindowPos(hwnd, 0, 0, 0, xres, yres, SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOZORDER | SWP_NOMOVE);
                 pswd->hr = psr->resize(xres, yres);
             }
         }
-        ENDCASECODE;
+        return 0;
+    case WM_WINDOWPOSCHANGED:   //stop animation if monitor is invalid or changed
+        if (!isInSameMonitor(hwnd, pswd->hmon)) PostMessage(hwnd, WM_SNOWSTOP, 0, 0);
+        return 0;
+    case WM_SETTINGCHANGE:  //update ground if working area is changed
+        if (wparam == SPI_SETWORKAREA && isInSameMonitor(hwnd, pswd->hmon)) {   //update current ground
+            MONITORINFO monii = { sizeof(MONITORINFO) };
+            GetMonitorInfo(pswd->hmon, &monii);
+            UINT ground = monii.rcWork.bottom - monii.rcMonitor.top;
+            if (ground != psl->ground) {
+                psl->ground = ground;
+                psl->updateGround();
+            }
+        }
         return 0;
     case WM_PAINT:
         BEGINCASECODE;
@@ -124,18 +143,9 @@ LRESULT CALLBACK SnowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         ENDCASECODE;
         return 0;
     case WM_TIMER:
-        BEGINCASECODE;
-        HMONITOR hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL);
-        if (hmon && hmon == pswd->hmon) {   //update current ground in each frame
-            MONITORINFO monii = { sizeof(MONITORINFO) };
-            GetMonitorInfo(hmon, &monii);
-            psl->ground = monii.rcWork.bottom - monii.rcWork.top;
-            psl->nextFrame();
-            pswd->hr = tryRender(*psr, *psl, pswd->hr);
-            if (pswd->hr == E_UNEXPECTED) PostMessage(hwnd, WM_SNOWSTOP, 0, 0);
-        }
-        else PostMessage(hwnd, WM_SNOWSTOP, 0, 0);
-        ENDCASECODE;
+        psl->nextFrame();
+        pswd->hr = tryRender(*psr, *psl, pswd->hr);
+        if (pswd->hr == E_UNEXPECTED) PostMessage(hwnd, WM_SNOWSTOP, 0, 0);
         return 0;
     }
     return DefWindowProc(hwnd, msg, wparam, lparam);
@@ -152,7 +162,7 @@ void runThread(HMONITOR hmon, HWND* phwnd, HANDLE hevent) {
         WS_POPUP,
         monii.rcMonitor.left, monii.rcMonitor.top,
         monii.rcMonitor.right - monii.rcMonitor.left, monii.rcMonitor.bottom - monii.rcMonitor.top,
-        nullptr, nullptr, GetModuleHandle(nullptr), &monii.rcWork
+        nullptr, nullptr, GetModuleHandle(nullptr), hmon
     );
 
     *phwnd = hwnd;

@@ -5,10 +5,10 @@
 
 struct Snow {
     static constexpr float DEFTFPS = 60;
-    static constexpr float AUTOPPS = 0;
     static constexpr float BASEPPS = 12;
     static constexpr float FASTPPS = 240;
     static constexpr float SLOWPPS = 60;
+    static constexpr float FADELEN = 20;
 
     float size;
     float pixel_per_frame;
@@ -17,10 +17,15 @@ struct Snow {
     float ground;
     UINT sleep_frames;
 
-    constexpr float alpha(float height) const { //fade out when touch the ground before reaching the bottom of the window
-        return (height > ground) ? max(1 - (y - ground) / (height - ground) * 2, 0) : 1;
+    constexpr float alpha() const { //fade out if touch the ground
+        return 1 - clamp<float>(y - ground, 0, FADELEN) / FADELEN;
     }
-    void setPPFbyPPS(float pixel_per_sec = AUTOPPS, float fps = DEFTFPS, float dpi = USER_DEFAULT_SCREEN_DPI);
+    constexpr float pps(float dpi = USER_DEFAULT_SCREEN_DPI) const {    //pps by snow size
+        return clamp<float>(BASEPPS * size * USER_DEFAULT_SCREEN_DPI / dpi, SLOWPPS, FASTPPS);
+    }
+    inline void step(float fps = DEFTFPS) { //move to next frame
+        y += (y - ground >= 0 && y - ground < FADELEN) ? SLOWPPS / fps / 2 : pixel_per_frame;
+    }
 };
 
 struct SnowList {
@@ -40,6 +45,8 @@ struct SnowList {
 
     SnowList(UINT xres, UINT yres, UINT ground, UINT dpi, UINT seed = std::mt19937::default_seed);
     void refreshSnowState(Snow& snow);
+    void updateSnowGround(Snow& snow);
     void refreshList();
+    void updateGround();
     void nextFrame();
 };
