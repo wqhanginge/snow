@@ -1,18 +1,30 @@
 #include "stdafx.h"
-#include "snows.h"
+#include "snow.h"
 #include "renderer.h"
 
-#define TBCREATED_TEXT  "TaskbarCreated"
-#define WNDCLS_NAME     "SNOW"
-#define MAINWNDCLS_NAME "SNOWMAIN"
-#define WND_EXSIZE(n)   (sizeof(LONG_PTR) * (n))
-#define WND_EXOFFSET(n) WND_EXSIZE(n)
 
-#define WM_SNOWNIMSG    (WM_APP + 0)
-#define WM_SNOWNIRESET  (WM_APP + 1)
-#define WM_SNOWSTART    (WM_APP + 2)
-#define WM_SNOWSTOP     (WM_APP + 3)
-#define WM_SNOWCLOSE    (WM_APP + 4)
+#define MUTEX_NAME          "MutexSnowWallpaperSingleton"
+#define TBCREATED_TEXT      "TaskbarCreated"
+#define SNOWWNDCLS_NAME     "SNOW"
+#define MAINWNDCLS_NAME     "SNOWMAN"
+#define WND_EXSIZE(n)       (sizeof(LONG_PTR) * (n))
+#define WND_EXOFFSET(n)     WND_EXSIZE(n)
+
+#define WNDEX_SNOWEXSIZE    WND_EXSIZE(3)
+#define WNDEX_SNOWLIST      WND_EXOFFSET(0)
+#define WNDEX_SNOWRENDERER  WND_EXOFFSET(1)
+#define WNDEX_SNOWWNDDATA   WND_EXOFFSET(2)
+
+#define WNDEX_MAINEXSIZE    WND_EXSIZE(2)
+#define WNDEX_MAINTBCMSG    WND_EXOFFSET(0)
+#define WNDEX_MAINTMAP      WND_EXOFFSET(1)
+
+#define WM_SNOWSTART    (WM_USER + 0)
+#define WM_SNOWSTOP     (WM_USER + 1)
+#define WM_SNOWCLOSE    (WM_USER + 2)
+
+#define WM_MAINNIMSG    (WM_APP + 0)
+#define WM_MAINNIRESET  (WM_APP + 1)
 
 #define SNOW_BMPSIZE    128
 #define SNOW_TIMERID    1
@@ -35,7 +47,7 @@ struct ThreadData {
 using ThreadMap = std::unordered_map<HMONITOR, ThreadData>;
 
 
-inline bool isInSameMonitor(HWND hwnd, HMONITOR hmon) {
+inline bool isInMonitor(HWND hwnd, HMONITOR hmon) {
     HMONITOR hmonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL);
     return hmonitor && hmonitor == hmon;
 }
@@ -49,9 +61,9 @@ HRESULT tryRender(SnowRenderer& sr, SnowList& sl, HRESULT hr, float alpha = 1.0f
 }
 
 LRESULT CALLBACK SnowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
-    SnowList* psl = (SnowList*)GetWindowLongPtr(hwnd, WND_EXOFFSET(0));
-    SnowRenderer* psr = (SnowRenderer*)GetWindowLongPtr(hwnd, WND_EXOFFSET(1));
-    SnowWindowData* pswd = (SnowWindowData*)GetWindowLongPtr(hwnd, WND_EXOFFSET(2));
+    SnowList* psl = (SnowList*)GetWindowLongPtr(hwnd, WNDEX_SNOWLIST);
+    SnowRenderer* psr = (SnowRenderer*)GetWindowLongPtr(hwnd, WNDEX_SNOWRENDERER);
+    SnowWindowData* pswd = (SnowWindowData*)GetWindowLongPtr(hwnd, WNDEX_SNOWWNDDATA);
 
     switch (msg) {
     case WM_CREATE: //default state is stopped
@@ -63,11 +75,11 @@ LRESULT CALLBACK SnowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         GetMonitorInfo(hmon, &monii);
 
         psl = new SnowList(lpcs->cx, lpcs->cy, monii.rcWork.bottom - monii.rcMonitor.top, GetDpiForWindow(hwnd), rd());
-        SetWindowLongPtr(hwnd, WND_EXOFFSET(0), (LONG_PTR)psl);
+        SetWindowLongPtr(hwnd, WNDEX_SNOWLIST, (LONG_PTR)psl);
         psr = new SnowRenderer;
-        SetWindowLongPtr(hwnd, WND_EXOFFSET(1), (LONG_PTR)psr);
+        SetWindowLongPtr(hwnd, WNDEX_SNOWRENDERER, (LONG_PTR)psr);
         pswd = new SnowWindowData{ hmon, S_OK };
-        SetWindowLongPtr(hwnd, WND_EXOFFSET(2), (LONG_PTR)pswd);
+        SetWindowLongPtr(hwnd, WNDEX_SNOWWNDDATA, (LONG_PTR)pswd);
 
         HICON hico = (HICON)LoadImage(lpcs->hInstance, MAKEINTRESOURCE(IDI_SNOW), IMAGE_ICON, SNOW_BMPSIZE, SNOW_BMPSIZE, LR_DEFAULTCOLOR);
         pswd->hr = psr->initialize(SNOW_BMPSIZE, SNOW_BMPSIZE, hico, lpcs->cx, lpcs->cy, hwnd);
@@ -97,14 +109,14 @@ LRESULT CALLBACK SnowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     case WM_DPICHANGED: //refresh animation if DPI changed
         BEGINCASECODE;
         UINT dpi = LOWORD(wparam);
-        if (isInSameMonitor(hwnd, pswd->hmon) && dpi != psl->dpi) {
+        if (isInMonitor(hwnd, pswd->hmon) && dpi != psl->dpi) {
             psl->dpi = dpi;
             psl->refreshList();
         }
         ENDCASECODE;
         return 0;
     case WM_DISPLAYCHANGE:  //refresh animation and device if resolution changed
-        if (isInSameMonitor(hwnd, pswd->hmon)) {
+        if (isInMonitor(hwnd, pswd->hmon)) {
             MONITORINFO monii = { sizeof(MONITORINFO) };
             GetMonitorInfo(pswd->hmon, &monii);
             UINT xres = monii.rcMonitor.right - monii.rcMonitor.left;
@@ -121,10 +133,10 @@ LRESULT CALLBACK SnowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         }
         return 0;
     case WM_WINDOWPOSCHANGED:   //stop animation if monitor is invalid or changed
-        if (!isInSameMonitor(hwnd, pswd->hmon)) PostMessage(hwnd, WM_SNOWSTOP, 0, 0);
+        if (!isInMonitor(hwnd, pswd->hmon)) PostMessage(hwnd, WM_SNOWSTOP, 0, 0);
         return 0;
     case WM_SETTINGCHANGE:  //update ground if working area is changed
-        if (wparam == SPI_SETWORKAREA && isInSameMonitor(hwnd, pswd->hmon)) {   //update current ground
+        if (wparam == SPI_SETWORKAREA && isInMonitor(hwnd, pswd->hmon)) {   //update current ground
             MONITORINFO monii = { sizeof(MONITORINFO) };
             GetMonitorInfo(pswd->hmon, &monii);
             UINT ground = monii.rcWork.bottom - monii.rcMonitor.top;
@@ -151,14 +163,14 @@ LRESULT CALLBACK SnowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     return DefWindowProc(hwnd, msg, wparam, lparam);
 }
 
-void runThread(HMONITOR hmon, HWND* phwnd, HANDLE hevent) {
+void wallpaperThread(HMONITOR hmon, HWND* phwnd, HANDLE hevent) {
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED); //for WIC
     MONITORINFO monii = { sizeof(MONITORINFO) };
     GetMonitorInfo(hmon, &monii);
 
     HWND hwnd = CreateWindowEx(
         WS_EX_NOREDIRECTIONBITMAP | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
-        TEXT(WNDCLS_NAME), nullptr,
+        TEXT(SNOWWNDCLS_NAME), nullptr,
         WS_POPUP,
         monii.rcMonitor.left, monii.rcMonitor.top,
         monii.rcMonitor.right - monii.rcMonitor.left, monii.rcMonitor.bottom - monii.rcMonitor.top,
@@ -183,7 +195,7 @@ BOOL CALLBACK MonitorEnumProc(HMONITOR hmonitor, HDC hdc, LPRECT lprect, LPARAM 
     if (it == ptm->end()) { //create a new thread if find a new monitor
         HWND hwnd = nullptr;
         HANDLE hevent = CreateEvent(nullptr, false, false, nullptr);
-        std::thread th(runThread, hmonitor, &hwnd, hevent);
+        std::thread th(wallpaperThread, hmonitor, &hwnd, hevent);
         WaitForSingleObject(hevent, INFINITE);
         CloseHandle(hevent);
         it = ptm->emplace(hmonitor, ThreadData{ std::move(th), hwnd, false, false }).first;
@@ -194,11 +206,11 @@ BOOL CALLBACK MonitorEnumProc(HMONITOR hmonitor, HDC hdc, LPRECT lprect, LPARAM 
 
 LRESULT onCreate(HWND hwnd, WPARAM wparam, LPARAM lparam) {
     LPCREATESTRUCT lpcs = (LPCREATESTRUCT)lparam;
-    SetWindowLongPtr(hwnd, WND_EXOFFSET(1), (LONG_PTR)lpcs->lpCreateParams);    //store taskbar created message
-    SendMessage(hwnd, WM_SNOWNIRESET, 0, 0);    //insert notify icon
+    SetWindowLongPtr(hwnd, WNDEX_MAINTBCMSG, (LONG_PTR)lpcs->lpCreateParams);   //store taskbar created message
+    SendMessage(hwnd, WM_MAINNIRESET, 0, 0);    //insert notify icon
 
     ThreadMap* ptm = new ThreadMap;
-    SetWindowLongPtr(hwnd, WND_EXOFFSET(0), (LONG_PTR)ptm);
+    SetWindowLongPtr(hwnd, WNDEX_MAINTMAP, (LONG_PTR)ptm);
     EnumDisplayMonitors(nullptr, nullptr, MonitorEnumProc, (LPARAM)ptm);
     for (auto& item : *ptm) {   //default program state is show
         PostMessage(item.second.hwnd, WM_SNOWSTART, 0, 0);
@@ -216,7 +228,7 @@ LRESULT onDestroy(HWND hwnd, WPARAM wparam, LPARAM lparam) {
     nid.uID = SNOW_NIID;
     Shell_NotifyIcon(NIM_DELETE, &nid);
 
-    ThreadMap* ptm = (ThreadMap*)GetWindowLongPtr(hwnd, WND_EXOFFSET(0));
+    ThreadMap* ptm = (ThreadMap*)GetWindowLongPtr(hwnd, WNDEX_MAINTMAP);
     for (auto& item : *ptm) {   //kill threads
         PostMessage(item.second.hwnd, WM_SNOWCLOSE, 0, 0);
         item.second.th.join();
@@ -228,7 +240,7 @@ LRESULT onDestroy(HWND hwnd, WPARAM wparam, LPARAM lparam) {
 }
 
 LRESULT onCommand(HWND hwnd, WPARAM wparam, LPARAM lparam) {
-    ThreadMap* ptm = (ThreadMap*)GetWindowLongPtr(hwnd, WND_EXOFFSET(0));
+    ThreadMap* ptm = (ThreadMap*)GetWindowLongPtr(hwnd, WNDEX_MAINTMAP);
     HMENU hnimenu = GetSubMenu(GetMenu(hwnd), 0);
     if (HIWORD(wparam) == 0) {  //menu
         switch (LOWORD(wparam)) {
@@ -267,7 +279,7 @@ LRESULT onCommand(HWND hwnd, WPARAM wparam, LPARAM lparam) {
     return 0;
 }
 
-LRESULT onSnowNIMsg(HWND hwnd, WPARAM wparam, LPARAM lparam) {
+LRESULT onMainNIMsg(HWND hwnd, WPARAM wparam, LPARAM lparam) {
     UINT niid = HIWORD(lparam), msg = LOWORD(lparam);   //NOTIFYICON_VERSION_4
     HMENU hnimenu = GetSubMenu(GetMenu(hwnd), 0);   //context menu for notify icon
     switch (msg) {
@@ -282,12 +294,12 @@ LRESULT onSnowNIMsg(HWND hwnd, WPARAM wparam, LPARAM lparam) {
     return 0;
 }
 
-LRESULT onSnowNIReset(HWND hwnd, WPARAM wparam, LPARAM lparam) {
+LRESULT onMainNIReset(HWND hwnd, WPARAM wparam, LPARAM lparam) {
     NOTIFYICONDATA nid = { sizeof(NOTIFYICONDATA) };
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
     nid.hWnd = hwnd;
     nid.uID = SNOW_NIID;
-    nid.uCallbackMessage = WM_SNOWNIMSG;
+    nid.uCallbackMessage = WM_MAINNIMSG;
     nid.hIcon = LoadIcon((HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), MAKEINTRESOURCE(IDI_ICON));
     nid.uVersion = NOTIFYICON_VERSION_4;
     _tcscpy_s(nid.szTip, TEXT(SNOW_NITIPSTR));
@@ -297,7 +309,7 @@ LRESULT onSnowNIReset(HWND hwnd, WPARAM wparam, LPARAM lparam) {
 }
 
 LRESULT onDisplayChange(HWND hwnd, WPARAM wparam, LPARAM lparam) {
-    ThreadMap* ptm = (ThreadMap*)GetWindowLongPtr(hwnd, WND_EXOFFSET(0));
+    ThreadMap* ptm = (ThreadMap*)GetWindowLongPtr(hwnd, WNDEX_MAINTMAP);
     for (auto& item : *ptm) item.second.valid = false;
     EnumDisplayMonitors(nullptr, nullptr, MonitorEnumProc, (LPARAM)ptm);
     for (auto it = ptm->begin(); it != ptm->end();) {
@@ -320,9 +332,9 @@ LRESULT onDisplayChange(HWND hwnd, WPARAM wparam, LPARAM lparam) {
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
-    PUINT ptbc_msg = (PUINT)GetWindowLongPtr(hwnd, WND_EXOFFSET(1));
-    if (ptbc_msg && *ptbc_msg == msg)  //redirect taskbar created message
-        msg = WM_SNOWNIRESET;
+    PUINT ptbc_msg = (PUINT)GetWindowLongPtr(hwnd, WNDEX_MAINTBCMSG);
+    if (ptbc_msg && *ptbc_msg == msg)   //redirect taskbar created message
+        msg = WM_MAINNIRESET;
 
     switch (msg) {
     case WM_CREATE:
@@ -331,10 +343,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         return onDestroy(hwnd, wparam, lparam);
     case WM_COMMAND:
         return onCommand(hwnd, wparam, lparam);
-    case WM_SNOWNIMSG:
-        return onSnowNIMsg(hwnd, wparam, lparam);
-    case WM_SNOWNIRESET:
-        return onSnowNIReset(hwnd, wparam, lparam);
+    case WM_MAINNIMSG:
+        return onMainNIMsg(hwnd, wparam, lparam);
+    case WM_MAINNIRESET:
+        return onMainNIReset(hwnd, wparam, lparam);
     case WM_DISPLAYCHANGE:
         return onDisplayChange(hwnd, wparam, lparam);
     }
@@ -354,8 +366,14 @@ ATOM WINAPI RegisterClassExWrapper(LPCTSTR lpClsName, WNDPROC lpfnWndProc, HINST
 }
 
 int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLine, int nCmdShow) {
-    RegisterClassExWrapper(TEXT(WNDCLS_NAME), SnowProc, hInstance, nullptr, WND_EXSIZE(3));
-    RegisterClassExWrapper(TEXT(MAINWNDCLS_NAME), WndProc, hInstance, LoadIcon(hInstance, MAKEINTRESOURCE(IDI_ICON)), WND_EXSIZE(2));
+    HANDLE hmutex = CreateMutex(nullptr, false, TEXT(MUTEX_NAME));
+    DWORD dwerr = GetLastError();
+    if (!hmutex || dwerr == ERROR_ALREADY_EXISTS) { //run only one wallpaper process
+        return (int)dwerr;
+    }
+
+    RegisterClassExWrapper(TEXT(SNOWWNDCLS_NAME), SnowProc, hInstance, nullptr, WNDEX_SNOWEXSIZE);
+    RegisterClassExWrapper(TEXT(MAINWNDCLS_NAME), WndProc, hInstance, LoadIcon(hInstance, MAKEINTRESOURCE(IDI_ICON)), WNDEX_MAINEXSIZE);
 
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 

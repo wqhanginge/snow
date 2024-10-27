@@ -1,5 +1,5 @@
 #include "stdafx.h"
-#include "snows.h"
+#include "snow.h"
 
 
 SnowList::SnowList(UINT xres, UINT yres, UINT ground, UINT dpi, UINT seed /*std::mt19937::default_seed*/)

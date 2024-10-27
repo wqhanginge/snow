@@ -21,7 +21,7 @@
     <ClInclude Include="snow\resource.h">
       <Filter>头文件</Filter>
     </ClInclude>
-    <ClInclude Include="snow\snows.h">
+    <ClInclude Include="snow\snow.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="snow\stdafx.h">
@@ -35,7 +35,7 @@
     <ClCompile Include="snow\renderer.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
-    <ClCompile Include="snow\snows.cpp">
+    <ClCompile Include="snow\snow.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="snow\stdafx.cpp">
